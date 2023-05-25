@@ -1,0 +1,199 @@
+// This alternate version of the code does not require
+// atomic.h. Instead, interrupts() and noInterrupts()
+// are used. Please use this code if your
+// platform does not support ATOMIC_BLOCK.
+
+//motor_1
+#define motor1_ENCA 1
+#define motor1_ENCB 2
+#define motor1_IN1 20
+#define motor1_IN2 21
+#define motor1_pwm 6
+
+//motor_2
+#define motor2_ENCA 3
+#define motor2_ENCB 4
+#define motor2_IN1 23
+
+#define motor2_IN2 22
+#define motor2_pwm 7
+// globals
+bool CW = true;
+bool CCW = false;
+long prevT = 0;
+
+//PID Parameters
+//KP
+float motor1_kp = 7;  //0.2,30,35(90)
+float motor2_kp = 4;  //0.2,30,35(90)
+//Ki
+float motor1_ki = 14;  //0.5,17,19(90),16,
+float motor2_ki = 8;  //0.5,17,19(90),16,
+//Kd
+float motor1_kd = 0.001;  //0.01
+float motor2_kd = 0.001;  //0.01
+int motor1_posPrev = 0;
+int motor2_posPrev = 0;
+
+// Use the "volatile" directive for variables
+// used in an interrupt
+volatile int motor1_pos_i = 0;
+volatile int motor2_pos_i = 0;
+
+float motor1_v1Filt = 0;
+float motor2_v1Filt = 0;
+
+float motor1_v1Prev = 0;
+float motor2_v1Prev = 0;
+
+float motor1_eintegral = 0;
+float motor2_eintegral = 0;
+
+float motor1_ed = 0;
+float motor2_ed = 0;
+
+float motor1_ePrev = 0;
+float motor2_ePrev = 0;
+
+// Set a target
+float vt = 255;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(motor1_ENCA, INPUT);
+  pinMode(motor1_ENCB, INPUT);
+  pinMode(motor1_IN1, OUTPUT);
+  pinMode(motor1_IN2, OUTPUT);
+  pinMode(motor1_pwm, OUTPUT);
+  pinMode(motor2_ENCA, INPUT);
+  pinMode(motor2_ENCB, INPUT);
+  pinMode(motor2_IN1, OUTPUT);
+  pinMode(motor2_IN2, OUTPUT);
+  pinMode(motor2_pwm, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(motor1_ENCA), motor1_readEncoder, RISING);
+  attachInterrupt(digitalPinToInterrupt(motor2_ENCA), motor2_readEncoder, RISING);
+}
+
+void loop() {
+
+  // read the position and velocity
+  int motor1_pos = 0;
+  int motor2_pos = 0;
+
+  noInterrupts();  // disable interrupts temporarily while reading
+  motor1_pos = motor1_pos_i;
+  motor2_pos = motor2_pos_i;
+  interrupts();  // turn interrupts back on
+
+  long currT = micros();
+  float deltaT = ((float)(currT - prevT)) / 1.0e6;
+
+  float motor1_velocity1 = (motor1_pos - motor1_posPrev) / deltaT;
+  float motor2_velocity1 = (motor2_pos - motor2_posPrev) / deltaT;  
+
+  motor1_posPrev = motor1_pos;
+  motor2_posPrev = motor2_pos;
+  prevT = currT;
+
+  // Convert count/s to RPM
+  float motor1_v1 = motor1_velocity1 / 700 * 40.5;  //ppr & gear ratio
+  float motor2_v1 = motor2_velocity1 / 700 * 40.5;  
+
+  // Low-pass filter (25 Hz cutoff)
+  motor1_v1Filt = 0.854 * motor1_v1Filt + 0.0728 * motor1_v1 + 0.0728 * motor1_v1Prev;
+  motor2_v1Filt = 0.854 * motor2_v1Filt + 0.0728 * motor2_v1 + 0.0728 * motor2_v1Prev;
+  
+  motor1_v1Prev = motor1_v1;
+  motor2_v1Prev = motor2_v1;
+  float motor1_e = vt - motor1_v1Filt;
+  float motor2_e = vt - motor2_v1Filt;
+  
+  motor1_eintegral = motor1_eintegral + motor1_e * deltaT;
+  motor2_eintegral = motor2_eintegral + motor2_e * deltaT;
+  
+  motor1_ed = (motor1_e - motor1_ePrev) / deltaT;
+  motor2_ed = (motor2_e - motor2_ePrev) / deltaT;
+  
+  float motor1_u = motor1_kp * motor1_e + motor1_ki * motor1_eintegral + motor1_kd * motor1_ed;
+  float motor2_u = motor2_kp * motor2_e + motor2_ki * motor2_eintegral + motor2_kd * motor2_ed;
+ 
+  // Set the motor speed and direction
+  int motor1_dir = CW;
+  if (motor1_u < 0) {
+    motor1_dir = CCW;
+  }
+
+  int motor2_dir = CW;
+  if (motor2_u < 0) {
+
+    motor2_dir = CCW;
+  }
+
+//Check PWM
+  int motor1_pwr = (int)fabs(motor1_u);
+  if (motor1_pwr > 255) {
+    motor1_pwr = 255;
+  }
+  int motor2_pwr = (int)fabs(motor2_u);
+  if (motor2_pwr > 255) {
+    motor2_pwr = 255;
+  }
+  setMotor(motor1_dir,motor1_pwr,motor1_pwm,motor1_IN1,motor1_IN2);
+  setMotor(motor2_dir,motor2_pwr,motor2_pwm,motor2_IN1,motor2_IN2);
+  
+  Serial.print(currT);
+  Serial.print(" ");
+  Serial.print(vt);
+  Serial.print(" ");
+  Serial.print(motor1_v1Filt);
+  Serial.print(" ");
+  Serial.print(motor2_v1Filt);
+  Serial.print(" ");
+  
+  //Serial.print(currT);
+  Serial.println();
+  delay(1);
+}
+void setMotor(int dir, int pwmVal, int pwm, int in1, int in2){
+  analogWrite(pwm,pwmVal); // Motor speed
+  if(dir == 1){ 
+    // Turn one way
+    digitalWrite(in1,HIGH);
+    digitalWrite(in2,LOW);
+  }
+  else if(dir == -1){
+    // Turn the other way
+    digitalWrite(in1,LOW);
+    digitalWrite(in2,HIGH);
+  }
+  else{
+    // Or dont turn
+    digitalWrite(in1,LOW);
+    digitalWrite(in2,LOW);    
+  }
+}
+void motor1_readEncoder() {
+  int b = digitalRead(motor1_ENCB);
+  int increment = 0;
+  if (b > 0) {
+    // If B is high, increment forward
+    increment = 1;
+  } else {
+    // Otherwise, increment backward
+    increment = -1;
+  }
+  motor1_pos_i = motor1_pos_i + increment;
+}
+void motor2_readEncoder() {
+  int b = digitalRead(motor2_ENCB);
+  int increment = 0;
+  if (b > 0) {
+    // If B is high, increment forward
+    increment = 1;
+  } else {
+    // Otherwise, increment backward
+    increment = -1;
+  }
+  motor2_pos_i = motor2_pos_i + increment;
+ }
